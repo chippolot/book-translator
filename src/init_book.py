@@ -16,14 +16,71 @@ import base64
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+from typing import Callable, Optional
 
+import pypdfium2 as pdfium
 from dotenv import load_dotenv
 
 from providers import _loads  # tolerant JSON parser
+
+
+# --------------------------------------------------------------------------- #
+# Retry helper                                                                #
+# --------------------------------------------------------------------------- #
+
+# Transient HTTP / SDK error markers worth retrying on. Anything else (auth
+# failures, 4xx client errors, hard validation errors) fails fast — they
+# won't get better by waiting.
+_TRANSIENT_MARKERS = (
+    "503", "UNAVAILABLE", "ServerError", "Overloaded",
+    "429", "RateLimit", "rate_limit",
+    "Timeout", "Timed out", "ConnectionError", "ConnectionResetError",
+    "RemoteProtocolError", "RemoteDisconnected",
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    s = f"{type(exc).__name__}: {exc}"
+    return any(m in s for m in _TRANSIENT_MARKERS)
+
+
+def _retry_call(fn: Callable, *, label: str,
+                max_attempts: int = 4,
+                base_delay: float = 2.0,
+                progress_cb: 'ProgressCb' = None):
+    """Run `fn()` with exponential backoff on transient errors.
+
+    Permanent errors (auth, validation, etc.) raise immediately so we
+    don't waste a minute backing off something that'll never recover.
+    """
+    delay = base_delay
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - SDK error types vary
+            if attempt == max_attempts or not _is_transient(exc):
+                raise
+            msg = (f"  {label}: attempt {attempt} failed "
+                   f"({type(exc).__name__}: {exc}); "
+                   f"retrying in {delay:.0f}s")
+            print(msg, file=sys.stderr)
+            if progress_cb:
+                progress_cb("call",
+                            f"{label} attempt {attempt} failed; "
+                            f"retrying in {delay:.0f}s…")
+            time.sleep(delay)
+            delay *= 2
+    raise RuntimeError("unreachable")
+
+# Progress callback used by the GUI runner. Signature:
+#   (event_kind: "render"|"fetch"|"call"|"done", message: str) -> None
+# `kind` lets the UI choose a status pill / spinner; `message` is human-
+# readable. CLI sets it to None and gets the existing print()s.
+ProgressCb = Optional[Callable[[str, str], None]]
 
 # Hard cap on get_page tool calls per init_book run, to bound cost in case
 # the model gets confused and keeps fetching.
@@ -98,7 +155,8 @@ class PageFetcher:
     """Lazy renderer with a per-run fetch cap and on-disk cache."""
 
     def __init__(self, pdf: Path, total: int, dpi: int, tmp: Path,
-                 max_fetches: int = MAX_FETCHES):
+                 max_fetches: int = MAX_FETCHES,
+                 progress_cb: ProgressCb = None):
         self.pdf = pdf
         self.total = total
         self.dpi = dpi
@@ -106,6 +164,7 @@ class PageFetcher:
         self.cache: dict[int, Path] = {}
         self.remaining = max_fetches
         self.fetched: list[int] = []
+        self._progress_cb = progress_cb
 
     def get(self, page: int) -> tuple[Path | None, str]:
         if not isinstance(page, int):
@@ -117,6 +176,12 @@ class PageFetcher:
         if self.remaining <= 0:
             return None, "fetch budget exhausted; produce the final JSON now"
         self.remaining -= 1
+        if self._progress_cb:
+            self._progress_cb(
+                "fetch",
+                f"reading page {page} of {self.total} "
+                f"({len(self.fetched) + 1} fetched, "
+                f"{self.remaining} budget left)")
         img = _render_page(self.pdf, page, self.dpi, self.tmp)
         if not img:
             return None, f"failed to render page {page}"
@@ -125,20 +190,34 @@ class PageFetcher:
         return img, "ok"
 
 
-def _pdfinfo(pdf: Path) -> dict[str, str]:
-    out = subprocess.check_output(["pdfinfo", str(pdf)], text=True)
-    info: dict[str, str] = {}
-    for line in out.splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            info[k.strip()] = v.strip()
-    return info
+def _pdf_metadata(pdf: Path) -> tuple[int, dict[str, str]]:
+    """Return (page count, metadata dict). Pure pypdfium2 — no subprocess
+    so the bundled .app works without Poppler installed.
+    """
+    doc = pdfium.PdfDocument(pdf)
+    n_pages = len(doc)
+    md: dict[str, str] = {}
+    # pypdfium2's metadata API: get_metadata_dict() returns the standard
+    # PDF info-dict keys (Title, Author, Subject, etc.) where present.
+    try:
+        raw = doc.get_metadata_dict()
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if s:
+                    md[str(k)] = s
+    except Exception:  # noqa: BLE001 - older versions / odd PDFs
+        pass
+    return n_pages, md
 
 
-def _format_hints(pdf: Path, info: dict[str, str]) -> str:
+def _format_hints(pdf: Path, page_count: int, info: dict[str, str]) -> str:
     interesting = ("Title", "Author", "Subject", "Keywords", "Creator",
-                   "Producer", "CreationDate", "ModDate", "Pages")
-    lines = [f"- filename: {pdf.name}"]
+                   "Producer", "CreationDate", "ModDate")
+    lines = [f"- filename: {pdf.name}",
+             f"- PDF Pages: {page_count}"]
     for k in interesting:
         v = info.get(k)
         if v:
@@ -147,14 +226,17 @@ def _format_hints(pdf: Path, info: dict[str, str]) -> str:
 
 
 def _render_page(pdf: Path, page: int, dpi: int, tmp: Path) -> Path | None:
-    prefix = tmp / f"sample_{page:04d}"
-    subprocess.run(
-        ["pdftoppm", "-png", "-r", str(dpi), "-gray",
-         "-f", str(page), "-l", str(page), str(pdf), str(prefix)],
-        check=True,
-    )
-    produced = sorted(tmp.glob(f"sample_{page:04d}*.png"))
-    return produced[0] if produced else None
+    """Render `page` (1-indexed) to a PNG in `tmp` via pypdfium2."""
+    out = tmp / f"sample_{page:04d}.png"
+    try:
+        doc = pdfium.PdfDocument(pdf)
+        if page < 1 or page > len(doc):
+            return None
+        bitmap = doc[page - 1].render(scale=dpi / 72.0, grayscale=True)
+        bitmap.to_pil().save(out, "PNG")
+        return out
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _b64(p: Path) -> str:
@@ -179,9 +261,13 @@ def _detect_anthropic(fetcher: PageFetcher, prompt: str, model: str) -> dict:
     messages: list = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
 
     last_text = ""
-    for _ in range(MAX_TURNS):
-        resp = client.messages.create(
-            model=model, max_tokens=4096, tools=tools, messages=messages,
+    for turn in range(MAX_TURNS):
+        resp = _retry_call(
+            lambda: client.messages.create(
+                model=model, max_tokens=4096, tools=tools, messages=messages,
+            ),
+            label=f"anthropic turn {turn + 1}",
+            progress_cb=fetcher._progress_cb,
         )
         messages.append({"role": "assistant", "content": resp.content})
 
@@ -231,9 +317,13 @@ def _detect_google(fetcher: PageFetcher, prompt: str, model: str) -> dict:
     contents: list = [types.Content(role="user", parts=[types.Part(text=prompt)])]
 
     last_text = ""
-    for _ in range(MAX_TURNS):
-        resp = client.models.generate_content(
-            model=model, contents=contents, config=cfg,
+    for turn in range(MAX_TURNS):
+        resp = _retry_call(
+            lambda: client.models.generate_content(
+                model=model, contents=contents, config=cfg,
+            ),
+            label=f"google turn {turn + 1}",
+            progress_cb=fetcher._progress_cb,
         )
         cand = resp.candidates[0]
         contents.append(cand.content)
@@ -280,9 +370,13 @@ def _detect_openai(fetcher: PageFetcher, prompt: str, model: str) -> dict:
     messages: list = [{"role": "user", "content": prompt}]
 
     last_text = ""
-    for _ in range(MAX_TURNS):
-        resp = client.chat.completions.create(
-            model=model, messages=messages, tools=tools,
+    for turn in range(MAX_TURNS):
+        resp = _retry_call(
+            lambda: client.chat.completions.create(
+                model=model, messages=messages, tools=tools,
+            ),
+            label=f"openai turn {turn + 1}",
+            progress_cb=fetcher._progress_cb,
         )
         msg = resp.choices[0].message
         messages.append({
@@ -371,35 +465,48 @@ END:
 """
 
 
-def _detect_txt_anthropic(prompt: str, model: str) -> dict:
+def _detect_txt_anthropic(prompt: str, model: str,
+                          progress_cb: ProgressCb = None) -> dict:
     import anthropic
     client = anthropic.Anthropic()
-    resp = client.messages.create(
-        model=model, max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
+    resp = _retry_call(
+        lambda: client.messages.create(
+            model=model, max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        ),
+        label="anthropic detect", progress_cb=progress_cb,
     )
     text = "".join(b.text for b in resp.content if b.type == "text")
     return _loads(text)
 
 
-def _detect_txt_google(prompt: str, model: str) -> dict:
+def _detect_txt_google(prompt: str, model: str,
+                       progress_cb: ProgressCb = None) -> dict:
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    resp = client.models.generate_content(
-        model=model, contents=[prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    resp = _retry_call(
+        lambda: client.models.generate_content(
+            model=model, contents=[prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"),
+        ),
+        label="google detect", progress_cb=progress_cb,
     )
     return _loads(resp.text)
 
 
-def _detect_txt_openai(prompt: str, model: str) -> dict:
+def _detect_txt_openai(prompt: str, model: str,
+                       progress_cb: ProgressCb = None) -> dict:
     from openai import OpenAI
     client = OpenAI()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
+    resp = _retry_call(
+        lambda: client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        ),
+        label="openai detect", progress_cb=progress_cb,
     )
     return _loads(resp.choices[0].message.content)
 
@@ -503,7 +610,8 @@ validate:
 
 
 def _init_book_txt(src: Path, out: Path, target_lang: str,
-                   provider: str, model: str | None) -> None:
+                   provider: str, model: str | None,
+                   progress_cb: ProgressCb = None) -> dict:
     import transcribe as transcribe_mod  # local: avoid heavy import on PDF path
     chunks = transcribe_mod.chunk_text_file(src)
     total = len(chunks)
@@ -522,11 +630,13 @@ def _init_book_txt(src: Path, out: Path, target_lang: str,
     detect_fn = _DETECT_TXT[provider]
     model = model or _DETECT[provider][1]
     print(f"Detecting metadata with {provider}/{model}...")
+    if progress_cb:
+        progress_cb("call", f"asking {provider}/{model} to identify the book…")
     prompt = TXT_PROMPT_TEMPLATE.format(
         target_lang=target_lang, hints=hints,
         opening=opening, middle=middle, end=end,
     )
-    detected = detect_fn(prompt, model)
+    detected = detect_fn(prompt, model, progress_cb=progress_cb)
     # Chunk indices play the role of "pages" for the txt branch.
     detected["first_body_page"] = 1
     detected["last_body_page"] = total
@@ -536,42 +646,56 @@ def _init_book_txt(src: Path, out: Path, target_lang: str,
 
     out.write_text(_render_yaml(src, detected, target_lang))
     print(f"\nWrote {out}")
+    if progress_cb:
+        progress_cb("done", f"wrote {out.name}")
     print("\nReview especially:")
     print("  - prompts.segmentation_notes")
     print("  - book.about_html (left blank)")
     print(f"\nThen run: python src/run.py --config {out}")
+    return detected
 
 
 def init_book(pdf: Path, out: Path, target_lang: str,
-              provider: str, model: str | None) -> None:
+              provider: str, model: str | None,
+              progress_cb: ProgressCb = None) -> dict:
+    """Detect book metadata and write `out` as YAML. Returns the detected
+    fields dict (so the GUI can preview them without re-reading the file).
+    Raises on missing input, overwrite collision, or detection failure.
+    """
     if not pdf.exists():
-        sys.exit(f"file not found: {pdf}")
+        raise FileNotFoundError(f"file not found: {pdf}")
     if out.exists():
-        sys.exit(f"refusing to overwrite existing {out} "
-                 f"(delete or rename it first)")
+        raise FileExistsError(
+            f"refusing to overwrite existing {out} (delete or rename it first)")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if pdf.suffix.lower() == ".txt":
-        _init_book_txt(pdf, out, target_lang, provider, model)
-        return
+        return _init_book_txt(pdf, out, target_lang, provider, model,
+                              progress_cb)
     if pdf.suffix.lower() != ".pdf":
-        sys.exit(f"unsupported input extension: {pdf.suffix} (want .pdf or .txt)")
+        raise ValueError(
+            f"unsupported input extension: {pdf.suffix} (want .pdf or .txt)")
 
-    info = _pdfinfo(pdf)
-    total = int(info.get("Pages", "0"))
+    if progress_cb:
+        progress_cb("call", "reading PDF metadata…")
+    total, pdf_info = _pdf_metadata(pdf)
     if total <= 0:
         raise RuntimeError("could not determine PDF page count")
     print(f"PDF has {total} page(s)")
 
     detect_fn, default_model = _DETECT[provider]
     model = model or default_model
+    msg = f"asking {provider}/{model} to identify the book…"
     print(f"Detecting metadata with {provider}/{model}...")
+    if progress_cb:
+        progress_cb("call", msg)
 
     with tempfile.TemporaryDirectory() as tmp:
-        fetcher = PageFetcher(pdf, total, dpi=200, tmp=Path(tmp))
+        fetcher = PageFetcher(pdf, total, dpi=200, tmp=Path(tmp),
+                              progress_cb=progress_cb)
         prompt = AGENT_PROMPT_TEMPLATE.format(
             total=total, max_fetches=MAX_FETCHES, target_lang=target_lang,
-            hints=_format_hints(pdf, info),
+            hints=_format_hints(pdf, total, pdf_info),
         )
         detected = detect_fn(fetcher, prompt, model)
         print(f"Pages fetched by agent: {fetcher.fetched}")
@@ -581,11 +705,14 @@ def init_book(pdf: Path, out: Path, target_lang: str,
 
     out.write_text(_render_yaml(pdf, detected, target_lang))
     print(f"\nWrote {out}")
+    if progress_cb:
+        progress_cb("done", f"wrote {out.name}")
     print("\nReview especially:")
     print("  - input.first_page / input.last_page (skip front/back matter)")
     print("  - book.about_html (left blank)")
     print("  - prompts.transcription_notes")
     print(f"\nThen run: python src/run.py --config {out}")
+    return detected
 
 
 def main() -> None:
@@ -599,8 +726,11 @@ def main() -> None:
 
     root = Path(__file__).resolve().parent.parent
     load_dotenv(root / ".env")
-    init_book(args.pdf.expanduser().resolve(), args.out.resolve(),
-              args.target_lang, args.provider, args.model)
+    try:
+        init_book(args.pdf.expanduser().resolve(), args.out.resolve(),
+                  args.target_lang, args.provider, args.model)
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        sys.exit(str(exc))
 
 
 if __name__ == "__main__":

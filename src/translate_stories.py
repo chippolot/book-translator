@@ -25,6 +25,22 @@ ProgressCb = Optional[Callable[[int, int, str], None]]
 MAX_RETRIES = 5
 CHUNK_CHARS = 9000  # split sections longer than this by paragraph
 
+# Substrings in `f"{type(exc).__name__}: {exc}"` that flag a retryable
+# transient failure. Anything else (auth errors, validation) raises
+# immediately so we don't burn 62 seconds of exponential backoff on
+# a permanently-broken API key.
+_TRANSIENT_MARKERS = (
+    "503", "UNAVAILABLE", "ServerError", "Overloaded",
+    "429", "RateLimit", "rate_limit",
+    "Timeout", "Timed out", "ConnectionError", "ConnectionResetError",
+    "RemoteProtocolError", "RemoteDisconnected",
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    s = f"{type(exc).__name__}: {exc}"
+    return any(m in s for m in _TRANSIENT_MARKERS)
+
 
 def _slug(title: str | None, index: int) -> str:
     base = title or "untitled"
@@ -53,7 +69,9 @@ def _with_retry(call, label: str):
         try:
             return call()
         except Exception as exc:  # noqa: BLE001
-            if attempt == MAX_RETRIES:
+            # Fast-fail on permanent errors (auth, validation) instead of
+            # burning ~62s of exponential backoff before giving up.
+            if attempt == MAX_RETRIES or not _is_transient_error(exc):
                 raise
             print(f"  {label} attempt {attempt} failed "
                   f"({type(exc).__name__}: {exc}); retrying in {delay:.0f}s",

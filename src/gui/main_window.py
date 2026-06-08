@@ -32,6 +32,10 @@ from .metadata_editor import (  # noqa: E402
 )
 from .segment_review import SegmentReviewDialog  # noqa: E402
 from .settings_dialog import SettingsDialog  # noqa: E402
+from .init_book_runner import (  # noqa: E402
+    InitBookPreflightDialog, InitBookProgressDialog, InitBookWorker,
+    INIT_PROVIDER_RANKING,
+)
 
 
 PROVIDER_LABEL_FMT = "{provider_label} · {model}"
@@ -221,8 +225,81 @@ class MainWindow(QMainWindow):
         if not save_path:
             return
         save_path = Path(save_path)
-        write_yaml(save_path, skeleton)
-        # Open the editor pre-filled so the user can tweak before running.
+
+        # Pre-flight: offer to auto-detect title/author/page range via LLM.
+        # If they decline (or no key configured), fall back to the empty
+        # skeleton + manual editor.
+        available = [p for p in INIT_PROVIDER_RANKING if keys.get(p)]
+        default_provider = available[0] if available else "google"
+        pre = InitBookPreflightDialog(
+            input_path,
+            available_providers=available or list(INIT_PROVIDER_RANKING),
+            default_provider=default_provider, parent=self)
+        if pre.exec() != InitBookPreflightDialog.Accepted:
+            # Skipped, or closed via Esc. Same behavior as before.
+            write_yaml(save_path, skeleton)
+            self._open_metadata_editor(save_path, prior_skeleton=True)
+            return
+
+        provider = pre.chosen_provider
+        target_lang = pre.chosen_target_lang
+        if not keys.get(provider):
+            QMessageBox.information(
+                self, "API key needed",
+                f"{models.PROVIDER_LABELS.get(provider, provider)} doesn't "
+                f"have an API key configured. Add one in Settings to "
+                f"enable auto-detection, or skip and fill in fields by "
+                f"hand.")
+            write_yaml(save_path, skeleton)
+            self._open_metadata_editor(save_path, prior_skeleton=True)
+            return
+
+        self._run_init_book(input_path, save_path, provider, target_lang)
+
+    def _run_init_book(self, input_path: Path, save_path: Path,
+                       provider: str, target_lang: str) -> None:
+        """Run init_book on a worker thread and show a progress dialog.
+
+        Re-runs the worker if the user clicks Retry on the dialog after
+        a transient failure (503, timeout, etc.).
+        """
+        prog = InitBookProgressDialog(
+            pdf_name=input_path.name,
+            target_lang=target_lang,
+            provider_label=models.PROVIDER_LABELS.get(provider, provider),
+            parent=self)
+
+        def spawn_worker() -> None:
+            worker = InitBookWorker(
+                input_path, save_path, target_lang, provider, model=None)
+            worker.progress.connect(prog.on_progress)
+            worker.finished.connect(prog.on_finished)
+            # Keep a strong reference to the worker until its thread
+            # truly exits — same lifecycle pattern as PipelineRunner.
+            self._init_worker = worker
+
+            def _discard(_=None) -> None:
+                if getattr(self, "_init_worker", None) is worker:
+                    self._init_worker = None
+
+            worker.start()
+            if worker.thread_done is not None:
+                worker.thread_done.connect(_discard)
+
+        prog.retry_requested.connect(spawn_worker)
+        spawn_worker()
+
+        result = prog.exec()
+        if prog.result_ok and save_path.exists():
+            # init_book wrote a populated yaml. Open the editor on it.
+            self._open_metadata_editor(save_path)
+            return
+
+        # Failure or skip-after-failure: fall back to the empty skeleton
+        # if the file doesn't already exist. init_book may have failed
+        # before writing, so we don't trust whatever's on disk.
+        if not save_path.exists():
+            write_yaml(save_path, initial_yaml_skeleton(input_path))
         self._open_metadata_editor(save_path, prior_skeleton=True)
 
     def open_existing_book(self) -> None:

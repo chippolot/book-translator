@@ -25,6 +25,23 @@ ProgressCb = Optional[Callable[[int, int, str], None]]
 
 MAX_RETRIES = 5
 
+# Substrings in `f"{type(exc).__name__}: {exc}"` that flag a retryable
+# transient failure. Anything else (auth errors, validation) raises
+# immediately so we don't waste a minute backing off something that
+# won't recover.
+_TRANSIENT_MARKERS = (
+    "503", "UNAVAILABLE", "ServerError", "Overloaded",
+    "429", "RateLimit", "rate_limit",
+    "Timeout", "Timed out", "ConnectionError", "ConnectionResetError",
+    "RemoteProtocolError", "RemoteDisconnected",
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    s = f"{type(exc).__name__}: {exc}"
+    return any(m in s for m in _TRANSIENT_MARKERS)
+
+
 # Target chunk size for .txt inputs. Big enough to keep API calls down,
 # small enough that any one chunk's transcription fits in an 8k-token reply.
 TXT_CHUNK_CHARS = 12000
@@ -38,7 +55,9 @@ def _with_retry(image_path: Path, cfg: Config, provider: str, model: str,
             return transcribe(image_path, cfg, provider=provider, model=model,
                               usage_cb=usage_cb)
         except Exception as exc:  # noqa: BLE001 - SDK error types vary
-            if attempt == MAX_RETRIES:
+            # Fast-fail on permanent errors (auth, validation) so a bad
+            # API key doesn't burn 62 seconds of exponential backoff.
+            if attempt == MAX_RETRIES or not _is_transient_error(exc):
                 raise
             print(f"  {image_path.name}: attempt {attempt} failed "
                   f"({type(exc).__name__}: {exc}); retrying in {delay:.0f}s",
@@ -57,7 +76,7 @@ def _with_retry_text(label: str, text: str, cfg: Config,
             return transcribe_text(text, cfg, provider=provider, model=model,
                                    usage_cb=usage_cb)
         except Exception as exc:  # noqa: BLE001
-            if attempt == MAX_RETRIES:
+            if attempt == MAX_RETRIES or not _is_transient_error(exc):
                 raise
             print(f"  {label}: attempt {attempt} failed "
                   f"({type(exc).__name__}: {exc}); retrying in {delay:.0f}s",
