@@ -133,68 +133,122 @@ def write_sidebyside_md(cfg: Config, stories: list[dict]) -> Path:
 # Book mode                                                                   #
 # --------------------------------------------------------------------------- #
 
-BOOK_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&display=swap');
-@page { size: 6in 9in; margin: 0.75in 0.7in 0.85in 0.7in; }
-@page :first { margin: 0; }
-* { box-sizing: border-box; }
-body { font-family: 'EB Garamond', 'Iowan Old Style', 'Hoefler Text',
-       Baskerville, Georgia, serif;
-       font-size: 12pt; line-height: 1.5; color: #111;
-       text-align: justify; hyphens: auto; -webkit-hyphens: auto; margin: 0; }
+# Google Fonts that need an @import line in the generated stylesheet to
+# be visible to Chrome's PDF renderer. Anything not in this map is assumed
+# to be locally installed (macOS ships e.g. Iowan Old Style, Baskerville,
+# Hoefler Text, Georgia, Palatino as standard book serifs).
+_GOOGLE_FONTS: dict[str, str] = {
+    "EB Garamond":
+        "https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@"
+        "0,400;0,500;0,600;1,400&display=swap",
+    "Lora":
+        "https://fonts.googleapis.com/css2?family=Lora:ital,wght@"
+        "0,400;0,500;0,600;1,400&display=swap",
+    "Crimson Pro":
+        "https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@"
+        "0,400;0,500;0,600;1,400&display=swap",
+    "Cormorant Garamond":
+        "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@"
+        "0,400;0,500;0,600;1,400&display=swap",
+    "Source Serif Pro":
+        "https://fonts.googleapis.com/css2?family=Source+Serif+Pro:ital,wght@"
+        "0,400;0,600;1,400&display=swap",
+    "Libre Baskerville":
+        "https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@"
+        "0,400;0,700;1,400&display=swap",
+}
 
-.coverpage { margin: 0; padding: 0; width: 6in; height: 9in;
+# Curated default font stack used as a fallback when the primary face is
+# missing on the rendering machine. Always ends in a generic serif so
+# the book never falls back to a sans-serif by accident.
+_DEFAULT_FALLBACKS = (
+    "'Iowan Old Style'", "'Hoefler Text'", "Baskerville", "Georgia", "serif",
+)
+
+
+def build_book_css(style: 'AssembleStyle') -> str:  # forward ref ok at runtime
+    """Render the BOOK_CSS stylesheet for a given AssembleStyle.
+
+    Splices in font_family, body_font_size, page_size, and appends
+    custom_css verbatim. Headings keep their absolute pt sizes so users
+    only have to tune one knob to make body text bigger/smaller without
+    breaking the visual hierarchy.
+    """
+    primary = style.font_family.strip() or "EB Garamond"
+    quoted_primary = f"'{primary}'" if " " in primary else primary
+    # Drop the primary out of the fallback list if it's already there
+    # (e.g. user picked Iowan Old Style, which is also in our default
+    # fallbacks) — avoids `font-family: 'Iowan Old Style', 'Iowan Old Style', ...`.
+    fallbacks = tuple(f for f in _DEFAULT_FALLBACKS
+                      if f.strip("'") != primary)
+    font_stack = ", ".join((quoted_primary, *fallbacks))
+    import_line = ""
+    if primary in _GOOGLE_FONTS:
+        import_line = f"@import url('{_GOOGLE_FONTS[primary]}');\n"
+    body_size_pt = float(style.body_font_size)
+    page_size = style.page_size.strip() or "6in 9in"
+    custom = style.custom_css.strip()
+    custom_block = f"\n/* user-supplied custom_css */\n{custom}\n" if custom else ""
+
+    return f"""
+{import_line}@page {{ size: {page_size}; margin: 0.75in 0.7in 0.85in 0.7in; }}
+@page :first {{ margin: 0; }}
+* {{ box-sizing: border-box; }}
+body {{ font-family: {font_stack};
+       font-size: {body_size_pt:g}pt; line-height: 1.5; color: #111;
+       text-align: justify; hyphens: auto; -webkit-hyphens: auto; margin: 0; }}
+
+.coverpage {{ margin: 0; padding: 0; width: {page_size.split()[0]}; height: {page_size.split()[1] if len(page_size.split()) > 1 else '9in'};
              background: #6c5039; page-break-after: always;
-             display: flex; align-items: center; justify-content: center; }
-.coverpage img { max-width: 100%; max-height: 100%; object-fit: contain;
-                 display: block; }
+             display: flex; align-items: center; justify-content: center; }}
+.coverpage img {{ max-width: 100%; max-height: 100%; object-fit: contain;
+                 display: block; }}
 
-.titlepage { text-align: center; padding-top: 28%; page-break-after: always;
-             hyphens: none; }
-.titlepage h1 { font-size: 30pt; font-weight: 600; font-variant: small-caps;
-                letter-spacing: 0.06em; margin: 0 0 0.6em; line-height: 1.15; }
-.titlepage .sub { font-size: 14pt; font-style: italic; margin-bottom: 4em;
-                  color: #444; }
-.titlepage .author { font-size: 13pt; margin-bottom: 8em; }
-.titlepage .meta { font-size: 10.5pt; color: #666; font-style: italic; }
+.titlepage {{ text-align: center; padding-top: 28%; page-break-after: always;
+             hyphens: none; }}
+.titlepage h1 {{ font-size: 30pt; font-weight: 600; font-variant: small-caps;
+                letter-spacing: 0.06em; margin: 0 0 0.6em; line-height: 1.15; }}
+.titlepage .sub {{ font-size: 14pt; font-style: italic; margin-bottom: 4em;
+                  color: #444; }}
+.titlepage .author {{ font-size: 13pt; margin-bottom: 8em; }}
+.titlepage .meta {{ font-size: 10.5pt; color: #666; font-style: italic; }}
 
-.infopage { padding-top: 1em; page-break-after: always; hyphens: none;
-            text-align: left; }
-.infopage h2 { font-variant: small-caps; font-size: 13pt; letter-spacing: 0.06em;
-               margin: 1.6em 0 0.5em; font-weight: 600; }
-.infopage h2:first-of-type { margin-top: 0; }
-.infopage p { margin: 0 0 0.7em; text-indent: 0; font-size: 11pt; }
-.infopage ul { margin: 0.2em 0 0.8em 1.4em; padding: 0; font-size: 11pt; }
-.infopage li { margin: 0.15em 0; }
-.infopage .credit { margin-top: 3em; font-size: 10pt; color: #555;
-                    font-style: italic; text-align: center; }
+.infopage {{ padding-top: 1em; page-break-after: always; hyphens: none;
+            text-align: left; }}
+.infopage h2 {{ font-variant: small-caps; font-size: 13pt; letter-spacing: 0.06em;
+               margin: 1.6em 0 0.5em; font-weight: 600; }}
+.infopage h2:first-of-type {{ margin-top: 0; }}
+.infopage p {{ margin: 0 0 0.7em; text-indent: 0; font-size: 11pt; }}
+.infopage ul {{ margin: 0.2em 0 0.8em 1.4em; padding: 0; font-size: 11pt; }}
+.infopage li {{ margin: 0.15em 0; }}
+.infopage .credit {{ margin-top: 3em; font-size: 10pt; color: #555;
+                    font-style: italic; text-align: center; }}
 
-.toc { page-break-after: always; hyphens: none; }
-.toc h2 { font-size: 20pt; font-variant: small-caps; text-align: center;
-          letter-spacing: 0.08em; margin: 0.5em 0 2em; font-weight: 600; }
-.toc ol { list-style: none; padding: 0; margin: 0; }
-.toc li { margin: 0 0 0.55em; page-break-inside: avoid; }
-.toc a { display: flex; align-items: baseline; color: #111;
-         text-decoration: none; }
-.toc-title { flex: 0 1 auto; padding-right: 0.4em; }
-.toc-dots { flex: 1 1 auto; border-bottom: 1px dotted #999;
-            margin: 0 0.3em 0.3em; min-width: 1em; }
-.toc-page { flex: 0 0 auto; font-variant-numeric: lining-nums;
-            min-width: 1.5em; text-align: right; }
+.toc {{ page-break-after: always; hyphens: none; }}
+.toc h2 {{ font-size: 20pt; font-variant: small-caps; text-align: center;
+          letter-spacing: 0.08em; margin: 0.5em 0 2em; font-weight: 600; }}
+.toc ol {{ list-style: none; padding: 0; margin: 0; }}
+.toc li {{ margin: 0 0 0.55em; page-break-inside: avoid; }}
+.toc a {{ display: flex; align-items: baseline; color: #111;
+         text-decoration: none; }}
+.toc-title {{ flex: 0 1 auto; padding-right: 0.4em; }}
+.toc-dots {{ flex: 1 1 auto; border-bottom: 1px dotted #999;
+            margin: 0 0.3em 0.3em; min-width: 1em; }}
+.toc-page {{ flex: 0 0 auto; font-variant-numeric: lining-nums;
+            min-width: 1.5em; text-align: right; }}
 
-.story { page-break-before: always; }
-.story h2 { text-align: center; font-size: 15pt; font-weight: 600;
+.story {{ page-break-before: always; }}
+.story h2 {{ text-align: center; font-size: 15pt; font-weight: 600;
             font-variant: small-caps; letter-spacing: 0.05em;
-            margin: 1.5em 0 0.3em; hyphens: none; }
-.story .original { text-align: center; font-size: 10.5pt; font-style: italic;
-                   color: #666; margin: 0 0 2em; hyphens: none; }
-.story p { margin: 0; text-indent: 1.4em; orphans: 2; widows: 2; }
-.story p.first { text-indent: 0; }
-.story p.verse { text-indent: 0; text-align: left; margin: 0 0 0.6em 2em;
-                 hyphens: none; }
-.divider { text-align: center; letter-spacing: 0.5em; margin: 1.2em 0;
-           text-indent: 0; }
-"""
+            margin: 1.5em 0 0.3em; hyphens: none; }}
+.story .original {{ text-align: center; font-size: 10.5pt; font-style: italic;
+                   color: #666; margin: 0 0 2em; hyphens: none; }}
+.story p {{ margin: 0; text-indent: 1.4em; orphans: 2; widows: 2; }}
+.story p.first {{ text-indent: 0; }}
+.story p.verse {{ text-indent: 0; text-align: left; margin: 0 0 0.6em 2em;
+                 hyphens: none; }}
+.divider {{ text-align: center; letter-spacing: 0.5em; margin: 1.2em 0;
+           text-indent: 0; }}{custom_block}"""
 
 
 def _is_verse(para: str) -> bool:
@@ -250,7 +304,7 @@ def write_book_html(cfg: Config, stories: list[dict],
     parts = [
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">',
         f"<title>{title}</title>",
-        f"<style>{BOOK_CSS}</style></head><body>",
+        f"<style>{build_book_css(cfg.assemble.style)}</style></head><body>",
     ]
     if cfg.book.cover and cfg.book.cover.exists():
         # Copy cover next to the HTML so relative references work.

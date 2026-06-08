@@ -15,15 +15,40 @@ from typing import Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ruamel.yaml import YAML
 
+from config import PAGE_SIZE_PRESETS
+
 from . import models
 from . import workflow_state as ws
+
+
+# Curated list of book-friendly fonts surfaced in the Assemble tab's
+# Font family dropdown. Each is either a Google Font (auto-loaded via an
+# `@import` in the generated stylesheet — see _GOOGLE_FONTS in assemble.py)
+# or a face that ships with macOS. The dropdown is editable, so users can
+# also type any font name their target Mac has installed.
+ASSEMBLE_FONT_CHOICES: tuple[str, ...] = (
+    "EB Garamond",
+    "Iowan Old Style",
+    "Hoefler Text",
+    "Baskerville",
+    "Georgia",
+    "Palatino",
+    "Cochin",
+    "Charter",
+    "Lora",
+    "Crimson Pro",
+    "Cormorant Garamond",
+    "Source Serif Pro",
+    "Libre Baskerville",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +311,73 @@ class MetadataEditor(QDialog):
         f.addRow("", self.fmt_book_html)
         f.addRow("", self.fmt_book_pdf)
         f.addRow("Chrome path", chrome_holder)
+
+        # Visual divider between operational settings and aesthetic ones.
+        f.addRow(_hline(), QLabel(""))
+        style_label = _section_label("Book styling")
+        f.addRow(style_label, QLabel(""))
+
+        # Font family — editable combo with each item rendered in its own
+        # face so it looks like a real font picker.
+        self.style_font_family = QComboBox()
+        self.style_font_family.setEditable(True)
+        for fam in ASSEMBLE_FONT_CHOICES:
+            self.style_font_family.addItem(fam)
+            idx = self.style_font_family.count() - 1
+            preview_font = QFont(fam)
+            preview_font.setPointSize(13)
+            self.style_font_family.setItemData(idx, preview_font, Qt.FontRole)
+        family_hint = QLabel(
+            "Used for the body text and headings. macOS ships several of "
+            "these (Iowan Old Style, Hoefler Text, Baskerville, Georgia, "
+            "Palatino, Cochin, Charter); the rest are loaded automatically "
+            "from Google Fonts when the PDF is rendered.")
+        family_hint.setObjectName("FormHint"); family_hint.setWordWrap(True)
+
+        # Body font size — 0.5pt resolution, 9–14pt is a sensible book range.
+        self.style_body_size = QDoubleSpinBox()
+        self.style_body_size.setRange(8.0, 16.0)
+        self.style_body_size.setSingleStep(0.5)
+        self.style_body_size.setDecimals(1)
+        self.style_body_size.setSuffix(" pt")
+
+        # Page size — preset labels mapped to CSS values; editable for custom.
+        self.style_page_size = QComboBox()
+        self.style_page_size.setEditable(True)
+        for label in PAGE_SIZE_PRESETS:
+            self.style_page_size.addItem(label, PAGE_SIZE_PRESETS[label])
+        page_hint = QLabel(
+            "The physical page size of the PDF. \"6 × 9 in\" is the "
+            "standard trade paperback. You can also type a raw CSS size "
+            "like <code>5.25in 8in</code>.")
+        page_hint.setObjectName("FormHint"); page_hint.setWordWrap(True)
+
+        # Custom CSS escape hatch for power users.
+        self.style_custom_css = QPlainTextEdit()
+        self.style_custom_css.setFixedHeight(100)
+        # Lock the size policy to Fixed so the surrounding QVBoxLayout
+        # (see _stack) correctly accounts for both the textedit and its
+        # hint label below; the default Expanding policy makes the
+        # holder report a too-small total height, causing the hint to
+        # render inside the textedit's bounds.
+        self.style_custom_css.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        ff = QFont("Menlo"); ff.setStyleHint(QFont.TypeWriter)
+        self.style_custom_css.setFont(ff)
+        self.style_custom_css.setPlaceholderText(
+            "/* Optional. Appended after the built-in stylesheet. */\n"
+            "/* body { line-height: 1.6; } */\n"
+            "/* .story h2 { font-size: 17pt; } */")
+        custom_hint = QLabel(
+            "Optional. Any CSS you put here is appended after the built-in "
+            "stylesheet, so you can override anything (line-height, "
+            "margins, heading sizes, colors).")
+        custom_hint.setObjectName("FormHint"); custom_hint.setWordWrap(True)
+
+        f.addRow("Font family", _stack(self.style_font_family, family_hint))
+        f.addRow("Body text size", self.style_body_size)
+        f.addRow("Page size", _stack(self.style_page_size, page_hint))
+        f.addRow("Custom CSS", _stack(self.style_custom_css, custom_hint))
+
         self.tabs.addTab(w, "Assemble")
 
     def _build_validate_tab(self) -> None:
@@ -376,6 +468,20 @@ class MetadataEditor(QDialog):
         self.fmt_book_pdf.setChecked("book-pdf" in fmts)
         self.chrome_path.setText(_s(assemble_.get("chrome_path")) or
                                  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+
+        style = (assemble_.get("style") or {}) if isinstance(assemble_, dict) else {}
+        self.style_font_family.setCurrentText(_s(style.get("font_family")) or "EB Garamond")
+        try:
+            self.style_body_size.setValue(float(style.get("body_font_size") or 12.0))
+        except (TypeError, ValueError):
+            self.style_body_size.setValue(12.0)
+        page = _s(style.get("page_size")) or "6in 9in"
+        # If the stored value matches a preset's CSS value, show its label.
+        label_for_page = next(
+            (lbl for lbl, val in PAGE_SIZE_PRESETS.items() if val == page),
+            None)
+        self.style_page_size.setCurrentText(label_for_page or page)
+        self.style_custom_css.setPlainText(_s(style.get("custom_css")))
 
         sigs = validate_.get("source_charset_signals") or []
         if isinstance(sigs, (list, tuple)):
@@ -469,6 +575,40 @@ class MetadataEditor(QDialog):
         if fmts:
             assemble_["formats"] = fmts
         _put(assemble_, "chrome_path", self.chrome_path.text().strip())
+
+        # Resolve the page-size dropdown back to its CSS value (the combo
+        # stores labels, but yaml should hold the CSS).
+        page_text = self.style_page_size.currentText().strip()
+        page_val = self.style_page_size.currentData()
+        if page_val is None:
+            # User typed something custom; pass through verbatim. If it
+            # matches a known label, swap to the CSS value.
+            page_val = PAGE_SIZE_PRESETS.get(page_text, page_text)
+        # Only persist `style:` when at least one field deviates from the
+        # defaults. Otherwise opening + saving an untouched form would add
+        # an inert `style:` block, polluting older yamls and falsely
+        # triggering stale-stage warnings.
+        font_family = self.style_font_family.currentText().strip()
+        body_size = float(self.style_body_size.value())
+        page_size = str(page_val).strip()
+        custom_css = self.style_custom_css.toPlainText().rstrip()
+        deviates = (
+            font_family not in ("", "EB Garamond")
+            or abs(body_size - 12.0) > 1e-6
+            or page_size not in ("", "6in 9in")
+            or custom_css != ""
+        )
+        if deviates:
+            style_block = assemble_.get("style") or {}
+            if not isinstance(style_block, dict):
+                style_block = {}
+            _put(style_block, "font_family", font_family)
+            style_block["body_font_size"] = body_size
+            _put(style_block, "page_size", page_size)
+            _put(style_block, "custom_css", custom_css)
+            assemble_["style"] = style_block
+        else:
+            assemble_.pop("style", None)
 
         sigs = [s for s in re.split(r"\s+", self.charset_signals.text().strip()) if s]
         if sigs:
@@ -646,7 +786,8 @@ def _stale_stages_from_diff(prior: dict, current: dict) -> set[str]:
         if _diff(("book", k)):
             stale.add("assemble"); break
     if _diff(("assemble", "formats")) or _diff(("assemble", "name")) \
-            or _diff(("assemble", "chrome_path")):
+            or _diff(("assemble", "chrome_path")) \
+            or _diff(("assemble", "style")):
         stale.add("assemble")
     return stale
 
@@ -659,6 +800,53 @@ def _section_label(text: str) -> QLabel:
     lbl = QLabel(text); lbl.setObjectName("SectionLabel")
     f = lbl.font(); f.setBold(True); lbl.setFont(f)
     return lbl
+
+
+def _hline() -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
+    line.setFrameShadow(QFrame.Sunken)
+    return line
+
+
+def _stack(*widgets: QWidget) -> QWidget:
+    """Stack widgets vertically in their own container with controlled
+    spacing. Used in QFormLayout rows where a control needs a help
+    label directly underneath it — QFormLayout doesn't enlarge a row to
+    fit a holder widget's internal layout, so we compute and pin the
+    holder's minimum height ourselves.
+    """
+    holder = QWidget()
+    v = QVBoxLayout(holder)
+    v.setContentsMargins(0, 2, 0, 4)
+    spacing = 8
+    v.setSpacing(spacing)
+    total_h = v.contentsMargins().top() + v.contentsMargins().bottom()
+    for i, w in enumerate(widgets):
+        v.addWidget(w)
+        if isinstance(w, QLabel) and w.wordWrap():
+            # Word-wrapped labels report a misleading single-line width
+            # for sizeHint(). Budget 54px so a 3-line wrap (the Font
+            # family hint is borderline 2/3 depending on dialog width)
+            # isn't clipped; shorter 1-2 line hints get a small gap
+            # below them, which is acceptable.
+            hint = 54
+        else:
+            # Use sizeHint, but cap at any fixed max the caller set
+            # (e.g. QPlainTextEdit.setFixedHeight(100) leaves sizeHint
+            # at ~192 for an "ideal" textarea — we want the constrained
+            # value).
+            sh = w.sizeHint().height()
+            mx = w.maximumHeight()
+            hint = min(sh, mx) if mx > 0 and mx < 16_777_215 else sh
+        total_h += hint
+        if i < len(widgets) - 1:
+            total_h += spacing
+    # Pin the holder to its computed height. Without this, QFormLayout
+    # gives spare vertical space to expanding holders, opening a big
+    # gap between a control and its help text.
+    holder.setFixedHeight(total_h)
+    return holder
 
 
 def _s(v) -> str:
@@ -727,6 +915,12 @@ def initial_yaml_skeleton(input_path: Path) -> dict:
             "name": slug,
             "formats": ["side-by-side-html", "book-html", "book-pdf"],
             "chrome_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "style": {
+                "font_family": "EB Garamond",
+                "body_font_size": 12.0,
+                "page_size": "6in 9in",
+                "custom_css": "",
+            },
         },
         "validate": {
             "source_charset_signals": [],

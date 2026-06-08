@@ -84,10 +84,45 @@ class ValidateOpts:
 
 
 @dataclass(frozen=True)
+class AssembleStyle:
+    """Per-book styling for the assembled book PDF/HTML.
+
+    Backward-compat: if `assemble.style` is absent from book.yaml, the
+    defaults below match the original hard-coded design (EB Garamond at
+    12pt on a 6×9-inch page) so existing books render identically.
+    """
+    # Font-family value spliced into the CSS body rule. Plain family name
+    # (no quotes — added by the renderer). Recognized Google Fonts get an
+    # `@import` line added automatically; anything else is assumed to be
+    # locally installed (macOS bundles e.g. Iowan Old Style, Baskerville).
+    font_family: str = "EB Garamond"
+    # Body text size in points.
+    body_font_size: float = 12.0
+    # CSS @page size: width then height (e.g. "6in 9in", "210mm 297mm").
+    # Accepts the labels in PAGE_SIZE_PRESETS as a convenience.
+    page_size: str = "6in 9in"
+    # Free-form CSS appended after the generated stylesheet. Power-user
+    # escape hatch for fine-grained tweaks (line-height, margins, etc).
+    custom_css: str = ""
+
+
+# Convenience labels for the GUI page-size dropdown. Maps label -> CSS value.
+PAGE_SIZE_PRESETS: dict[str, str] = {
+    "6 × 9 in (trade paperback)": "6in 9in",
+    "5 × 8 in (digest)": "5in 8in",
+    "5.5 × 8.5 in (US Trade)": "5.5in 8.5in",
+    "US Letter (8.5 × 11 in)": "8.5in 11in",
+    "A4 (210 × 297 mm)": "210mm 297mm",
+    "A5 (148 × 210 mm)": "148mm 210mm",
+}
+
+
+@dataclass(frozen=True)
 class AssembleOpts:
     chrome_path: str = DEFAULT_CHROME
     name: str = "book"
     formats: tuple[str, ...] = ("side-by-side-html", "book-html", "book-pdf")
+    style: AssembleStyle = field(default_factory=AssembleStyle)
 
 
 @dataclass(frozen=True)
@@ -220,11 +255,30 @@ def load_config(path: Path | str) -> Config:
             name=assemble_name,
             formats=tuple(assemble.get("formats") or
                           ("side-by-side-html", "book-html", "book-pdf")),
+            style=_load_assemble_style(assemble.get("style") or {}),
         ),
         # Repo root — where .env lives next to src/. The config file itself
         # may live anywhere; `base` (used for _expand) tracks that separately.
         project_root=Path(__file__).resolve().parent.parent,
         config_path=path,
+    )
+
+
+def _load_assemble_style(raw: dict) -> AssembleStyle:
+    """Parse the optional `assemble.style:` section. Accepts a page-size
+    preset label (any key in PAGE_SIZE_PRESETS) or a raw CSS size string."""
+    page = raw.get("page_size")
+    if isinstance(page, str) and page in PAGE_SIZE_PRESETS:
+        page = PAGE_SIZE_PRESETS[page]
+    return AssembleStyle(
+        font_family=str(raw.get("font_family")
+                        or AssembleStyle.__dataclass_fields__["font_family"].default).strip(),
+        body_font_size=float(
+            raw.get("body_font_size")
+            or AssembleStyle.__dataclass_fields__["body_font_size"].default),
+        page_size=str(page
+                      or AssembleStyle.__dataclass_fields__["page_size"].default).strip(),
+        custom_css=str(raw.get("custom_css") or "").strip(),
     )
 
 

@@ -91,6 +91,27 @@ assemble:
   # macOS path to Chrome/Chromium for PDF rendering. Override if Chrome is
   # installed somewhere else, or use a Chromium binary.
   chrome_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  # Optional. Visual styling for the assembled book HTML/PDF. Omit the
+  # whole `style:` block to use defaults (EB Garamond 12pt on a 6×9 in
+  # page) — older book.yaml files keep working unchanged.
+  style:
+    # Body font. macOS ships several book-friendly serifs (Iowan Old
+    # Style, Hoefler Text, Baskerville, Georgia, Palatino, Cochin, Charter).
+    # Google Fonts that are loaded automatically: EB Garamond, Lora,
+    # Crimson Pro, Cormorant Garamond, Source Serif Pro, Libre Baskerville.
+    # Any other locally-installed font name also works.
+    font_family: "EB Garamond"
+    # Body text size in points. Headings keep their absolute sizes so
+    # changing this only affects paragraph readability.
+    body_font_size: 12.0
+    # CSS @page size. Accepts presets like "6in 9in", "5in 8in",
+    # "8.5in 11in" (US Letter), "210mm 297mm" (A4), "148mm 210mm" (A5),
+    # or any raw CSS size like "5.25in 8in".
+    page_size: "6in 9in"
+    # Optional. Free-form CSS appended after the built-in stylesheet —
+    # use for fine-grained tweaks (line-height, margins, individual
+    # heading sizes, colors).
+    custom_css: ""
 
 validate:
   # Characters that should NOT routinely appear in the TARGET translation —
