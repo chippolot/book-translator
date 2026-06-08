@@ -7,8 +7,8 @@ import sys as _sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QToolBar,
@@ -82,6 +82,11 @@ class MainWindow(QMainWindow):
         self.edit_meta_action.setEnabled(False)
         tb.addAction(self.edit_meta_action)
 
+        self.open_folder_action = QAction("Open output folder", self)
+        self.open_folder_action.triggered.connect(self._open_output_folder)
+        self.open_folder_action.setEnabled(False)
+        tb.addAction(self.open_folder_action)
+
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
@@ -144,10 +149,19 @@ class MainWindow(QMainWindow):
         self.header_title.setFont(f)
         v.addWidget(self.header_title)
 
+        sub_row = QHBoxLayout()
+        sub_row.setSpacing(10)
         self.header_sub = QLabel("")
         self.header_sub.setObjectName("BookSubtitle")
         self.header_sub.setWordWrap(True)
-        v.addWidget(self.header_sub)
+        sub_row.addWidget(self.header_sub, 1)
+        self.open_folder_btn = QPushButton("Open output folder")
+        self.open_folder_btn.setObjectName("GhostBtn")
+        self.open_folder_btn.setToolTip(
+            "Reveal this book's output directory in Finder/Explorer.")
+        self.open_folder_btn.clicked.connect(self._open_output_folder)
+        sub_row.addWidget(self.open_folder_btn)
+        v.addLayout(sub_row)
 
         self.header_usage = QLabel("")
         self.header_usage.setObjectName("UsageLine")
@@ -186,6 +200,7 @@ class MainWindow(QMainWindow):
     def show_welcome(self) -> None:
         self.stack.setCurrentWidget(self._welcome)
         self.edit_meta_action.setEnabled(False)
+        self.open_folder_action.setEnabled(False)
 
     def start_new_book(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -261,6 +276,7 @@ class MainWindow(QMainWindow):
         self.usage_log = usage_mod.UsageLog(cfg.output_dir / "usage.jsonl")
         self.stack.setCurrentWidget(self._workflow)
         self.edit_meta_action.setEnabled(True)
+        self.open_folder_action.setEnabled(True)
         self._refresh_header()
         self._refresh_state()
 
@@ -320,6 +336,34 @@ class MainWindow(QMainWindow):
                 p = self.cfg.providers.translate
                 card.set_provider_line(
                     f"Provider: {models.PROVIDER_LABELS.get(p.provider, p.provider)} · {p.model}")
+            elif stage == "assemble":
+                card.set_outputs(self._assemble_outputs())
+
+    def _open_output_folder(self) -> None:
+        if not self.cfg:
+            return
+        d = self.cfg.output_dir
+        d.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
+
+    def _assemble_outputs(self) -> list[Path]:
+        """Return the assemble stage's output files in display order.
+
+        PDF first (headline artifact), then styled book HTML, then the
+        bilingual review files. Non-existent files are filtered by the card.
+        """
+        if not self.cfg:
+            return []
+        out = self.cfg.output_dir
+        name = self.cfg.assemble.name
+        # Priority order regardless of which formats were configured — the
+        # card filters to whatever actually exists on disk.
+        return [
+            out / f"{name}.pdf",
+            out / f"{name}.html",
+            out / f"{name}_review.html",
+            out / f"{name}_review.md",
+        ]
 
     def _upstream_ok(self, stage: str, state: ws.WorkflowState) -> tuple[bool, str]:
         """Return (enabled, hint)."""

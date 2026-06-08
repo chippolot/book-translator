@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout,
     QWidget,
@@ -138,6 +140,16 @@ class StageCard(QFrame):
         self.log_line.setVisible(False)
         outer.addWidget(self.log_line)
 
+        # Container for "Open …" buttons surfacing this stage's outputs.
+        # Populated by set_outputs(); hidden when there are no outputs.
+        self.outputs_holder = QWidget()
+        self.outputs_layout = QHBoxLayout(self.outputs_holder)
+        self.outputs_layout.setContentsMargins(0, 6, 0, 0)
+        self.outputs_layout.setSpacing(8)
+        self.outputs_layout.addStretch(1)
+        self.outputs_holder.setVisible(False)
+        outer.addWidget(self.outputs_holder)
+
     # ----- public API -----
 
     def set_provider_line(self, text: str) -> None:
@@ -193,6 +205,28 @@ class StageCard(QFrame):
         self.log_line.setText(line)
         self.log_line.setVisible(True)
 
+    def set_outputs(self, files: list[Path]) -> None:
+        """Show one 'Open' button per existing output file.
+
+        Buttons launch the file with the OS's default app (Preview for PDF,
+        browser for HTML, TextEdit for Markdown). Files that don't exist are
+        silently skipped.
+        """
+        # Clear prior buttons (keep the trailing stretch).
+        while self.outputs_layout.count() > 1:
+            item = self.outputs_layout.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is not None:
+                w.deleteLater()
+        existing = [f for f in files if f and Path(f).exists()]
+        if not existing:
+            self.outputs_holder.setVisible(False)
+            return
+        for path in existing:
+            btn = _OutputButton(Path(path))
+            self.outputs_layout.insertWidget(self.outputs_layout.count() - 1, btn)
+        self.outputs_holder.setVisible(True)
+
     def _reapply_pill_style(self) -> None:
         st = self.pill.style()
         st.unpolish(self.pill); st.polish(self.pill)
@@ -217,6 +251,40 @@ def _pill_for(s: StageStatus) -> tuple[str, str]:
     if s.status == Status.FAILED:
         return ("✕ Failed", "failed")
     return (s.status.value, "not_started")
+
+
+_EXT_LABELS = {
+    ".pdf": "Open PDF",
+    ".html": "Open HTML",
+    ".htm": "Open HTML",
+    ".md": "Open Markdown",
+}
+
+
+class _OutputButton(QPushButton):
+    """Button that opens an output file with the system default app."""
+
+    def __init__(self, path: Path) -> None:
+        ext = path.suffix.lower()
+        base_label = _EXT_LABELS.get(ext, "Open")
+        # Distinguish bilingual review HTML from the styled book HTML.
+        if "_review" in path.stem:
+            if ext == ".md":
+                base_label = "Open review (Markdown)"
+            else:
+                base_label = "Open review (HTML)"
+        elif ext == ".html":
+            base_label = "Open book (HTML)"
+        elif ext == ".pdf":
+            base_label = "Open book (PDF)"
+        super().__init__(base_label)
+        self.setObjectName("OutputBtn" if ext == ".pdf" else "SecondaryBtn")
+        self.setToolTip(str(path))
+        self._path = path
+        self.clicked.connect(self._open)
+
+    def _open(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._path)))
 
 
 def _run_label(stage: str, status: Status) -> str:

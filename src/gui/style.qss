@@ -113,6 +113,14 @@ QPushButton#GhostBtn {
 }
 QPushButton#GhostBtn:hover { background: #ecf1ff; border-color: #d6dcff; }
 
+QPushButton#OutputBtn {
+    background: #14702f;
+    color: white;
+    border: 1px solid #0f5b25;
+    font-weight: 500;
+}
+QPushButton#OutputBtn:hover { background: #0f5b25; }
+
 /* ---------- Forms ---------- */
 QLabel#SectionLabel { color: #1d1d1f; }
 QLabel#FormHint { color: #6e6e73; font-size: 12px; }
