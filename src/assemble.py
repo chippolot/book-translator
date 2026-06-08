@@ -8,6 +8,7 @@ The side-by-side mode also writes a parallel Markdown file.
 """
 
 import argparse
+import ctypes
 import html
 import json
 import re
@@ -15,7 +16,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
+
 from config import Config, load_config
+
+
+class ChromeMissingError(RuntimeError):
+    """Raised by html_to_pdf when the configured Chrome binary doesn't exist.
+
+    `run()` catches this and falls back to producing only the HTML output,
+    so users without Chrome still get a usable bilingual document.
+    """
 
 DIVIDER_LINE = re.compile(r"^[\s*•·.—–\-]+$")
 
@@ -287,24 +299,45 @@ def write_book_html(cfg: Config, stories: list[dict],
 def html_to_pdf(cfg: Config, html_path: Path, pdf_path: Path) -> None:
     chrome = cfg.assemble.chrome_path
     if not Path(chrome).exists():
-        sys.exit(f"Chrome not found at {chrome}; "
-                 f"set assemble.chrome_path in book.yaml.")
+        raise ChromeMissingError(
+            f"Chrome not found at {chrome}. Install Google Chrome (or set "
+            f"assemble.chrome_path in book.yaml) to enable PDF output.")
     cmd = [chrome, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
            f"--print-to-pdf={pdf_path}", f"file://{html_path}"]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL)
 
 
-_DEST_RE = re.compile(r'^\s*(\d+)\s+\[.*?\]\s+"story-(\d+)"\s*$')
+_STORY_DEST_RE = re.compile(r"^story-(\d+)$")
 
 
 def read_story_pages(pdf_path: Path) -> dict[int, int]:
-    out = subprocess.check_output(["pdfinfo", "-dests", str(pdf_path)], text=True)
-    pages = {}
-    for line in out.splitlines():
-        m = _DEST_RE.match(line)
-        if m:
-            pages[int(m.group(2))] = int(m.group(1))
+    """Map story index → 1-based PDF page number using PDFium's named
+    destinations. Replaces the previous `pdfinfo -dests` subprocess so the
+    assembled .app has no Poppler dependency.
+    """
+    doc = pdfium.PdfDocument(pdf_path)
+    pages: dict[int, int] = {}
+    count = pdfium_c.FPDF_CountNamedDests(doc.raw)
+    for i in range(count):
+        buf_len = ctypes.c_long(0)
+        pdfium_c.FPDF_GetNamedDest(doc.raw, i, None, ctypes.byref(buf_len))
+        if buf_len.value <= 0:
+            continue
+        name_buf = ctypes.create_string_buffer(buf_len.value)
+        handle = pdfium_c.FPDF_GetNamedDest(
+            doc.raw, i, name_buf, ctypes.byref(buf_len))
+        if not handle:
+            continue
+        raw = ctypes.string_at(name_buf, buf_len.value)
+        # PDFium returns UTF-16LE with a trailing null terminator.
+        name = raw.decode("utf-16-le", errors="replace").rstrip("\x00")
+        m = _STORY_DEST_RE.match(name)
+        if not m:
+            continue
+        page_idx = pdfium_c.FPDFDest_GetDestPageIndex(doc.raw, handle)
+        if page_idx >= 0:
+            pages[int(m.group(1))] = page_idx + 1
     return pages
 
 
@@ -335,9 +368,21 @@ def run(cfg: Config, formats: list[str] | None = None) -> list[Path]:
         written.extend([h, m])
         print(f"side-by-side: {h}\n               {m}")
     if "book-pdf" in formats:
-        p = build_book_pdf(cfg, stories)
-        written.append(p)
-        print(f"book PDF:     {p}")
+        try:
+            p = build_book_pdf(cfg, stories)
+            written.append(p)
+            print(f"book PDF:     {p}")
+        except ChromeMissingError as exc:
+            # Chrome isn't installed. Fall back to writing just the book
+            # HTML so the user still gets a usable output, and tag the
+            # written list with a sentinel comment line they (or the GUI)
+            # can surface.
+            print(f"WARNING: {exc}", file=sys.stderr)
+            print("Falling back to book-html only (no PDF will be produced).",
+                  file=sys.stderr)
+            p = write_book_html(cfg, stories)
+            written.append(p)
+            print(f"book HTML:    {p}")
     elif "book-html" in formats:
         p = write_book_html(cfg, stories)
         written.append(p)

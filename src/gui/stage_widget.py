@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .eta import ETACalculator, format_remaining
 from .workflow_state import StageStatus, Status
 
 
@@ -54,6 +55,7 @@ class StageCard(QFrame):
         self._build(ordinal, show_provider)
         self._status: Status = Status.NOT_STARTED
         self._enabled_by_upstream = True
+        self._eta = ETACalculator()
 
     # ----- layout -----
     def _build(self, ordinal: int, show_provider: bool) -> None:
@@ -82,10 +84,19 @@ class StageCard(QFrame):
         self.hint.setWordWrap(True)
         outer.addWidget(self.hint)
 
+        detail_row = QHBoxLayout()
+        detail_row.setContentsMargins(0, 0, 0, 0)
+        detail_row.setSpacing(8)
         self.detail = QLabel("")
         self.detail.setObjectName("StageDetail")
         self.detail.setWordWrap(True)
-        outer.addWidget(self.detail)
+        detail_row.addWidget(self.detail, 1)
+        self.eta_label = QLabel("")
+        self.eta_label.setObjectName("EtaLabel")
+        self.eta_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.eta_label.setVisible(False)
+        detail_row.addWidget(self.eta_label, 0)
+        outer.addLayout(detail_row)
 
         self.progress = QProgressBar()
         self.progress.setObjectName("StageProgress")
@@ -157,7 +168,16 @@ class StageCard(QFrame):
             self.provider_label.setText(text)
 
     def set_status(self, s: StageStatus) -> None:
+        prior = self._status
         self._status = s.status
+        # Reset the ETA whenever we leave RUNNING. Entering RUNNING is also
+        # a fresh start (e.g. resuming after a cancel).
+        if prior != s.status and s.status != Status.RUNNING:
+            self._eta.reset()
+            self.eta_label.setText("")
+            self.eta_label.setVisible(False)
+        elif s.status == Status.RUNNING and prior != Status.RUNNING:
+            self._eta.reset()
         pill_text, pill_kind = _pill_for(s)
         self.pill.setText(pill_text)
         self.pill.setProperty("status", pill_kind)
@@ -204,6 +224,31 @@ class StageCard(QFrame):
     def show_log_line(self, line: str) -> None:
         self.log_line.setText(line)
         self.log_line.setVisible(True)
+
+    def update_progress(self, done: int, total: int) -> None:
+        """Called from the main window's _on_progress slot. Updates the
+        progress bar and the ETA label using the shared ETACalculator.
+        """
+        if total > 0:
+            self.progress.setVisible(True)
+            self.progress.setMaximum(max(total, 1))
+            self.progress.setValue(done)
+            self._eta.record(done, total)
+            if done >= total:
+                self.eta_label.setText("")
+                self.eta_label.setVisible(False)
+            else:
+                remaining = self._eta.remaining_seconds()
+                text = format_remaining(remaining)
+                if text:
+                    self.eta_label.setText(f"~{text} remaining")
+                    self.eta_label.setVisible(True)
+                else:
+                    self.eta_label.setText("estimating…")
+                    self.eta_label.setVisible(True)
+        else:
+            self.progress.setVisible(False)
+            self.eta_label.setVisible(False)
 
     def set_outputs(self, files: list[Path]) -> None:
         """Show one 'Open' button per existing output file.

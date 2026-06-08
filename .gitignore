@@ -1,4 +1,5 @@
 .venv/
+.venv-*/
 .env
 pages/
 out/
@@ -10,3 +11,12 @@ book.yaml
 books/
 # Per-machine Claude Code session settings
 .claude/settings.local.json
+
+# Mac .app build artifacts (the build/ scripts themselves are tracked).
+# Per-arch PyInstaller workdirs:
+build/_pyinstaller*/
+# Cached python-build-standalone downloads + extracts:
+build/_pbs/
+# Generated from src/gui/resources/book.svg:
+build/book.icns
+dist/

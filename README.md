@@ -28,15 +28,20 @@ When it finishes, it usually tells you to run two extra lines to "add brew to
 your PATH". Copy and run whatever it says. (If you skip this, the `brew`
 command won't be found later.)
 
-### 2. Install Python 3, Poppler (for PDF pages), and Google Chrome
+### 2. Install Python 3 and (optionally) Google Chrome
 
 ```bash
-brew install python poppler
+brew install python
 brew install --cask google-chrome
 ```
 
-Poppler provides `pdftoppm` (turns PDF pages into images) and `pdfinfo`.
-Chrome is used at the end to render the final book PDF.
+Chrome is used at the end to render the final book PDF. The app falls
+back to HTML-only assembly if Chrome isn't available, so installing it is
+optional but recommended.
+
+(Older versions of this project also required `brew install poppler` for
+PDF rasterization; that's no longer needed — we now use a bundled
+PDFium library.)
 
 ### 3. Get one or more API keys
 
@@ -114,10 +119,38 @@ OPENAI_API_KEY=
 
 ---
 
-## Easy mode — the GUI
+## Easy mode — pre-built Mac app (no Terminal required)
 
-If you'd rather not type commands, there's a Mac/Windows/Linux desktop GUI
-that wraps the whole pipeline. Launch it from the project folder:
+The recommended way to run this on a Mac is the pre-built `.app`. No
+Terminal, Homebrew, or Python needed.
+
+1. Download the right DMG from the [Releases] page:
+   - **Apple Silicon** (Mac with M1/M2/M3/M4 chip — anything sold late
+     2020 or later): `Book Translator (Apple Silicon).dmg`
+   - **Intel** (pre-2020 Macs): `Book Translator (Intel).dmg`
+   - If you're not sure, click  → About This Mac. "Apple silicon" or
+     "Apple M…" means Apple Silicon; "Intel" means Intel.
+2. Double-click the DMG. Drag **Book Translator** to the **Applications**
+   folder.
+3. **First launch only**: open the Applications folder, **right-click**
+   (or Control-click) Book Translator → **Open** → click **Open** in the
+   popup. macOS does this for any app from outside the App Store — once
+   you've done it once, double-click works normally after that.
+4. In the app, click **Settings** and paste your API key(s) for the
+   provider(s) you want to use (Anthropic / Google / OpenAI). macOS will
+   prompt for your login password the first time it saves a key to
+   Keychain — click **Always Allow**.
+5. (Optional) Install Google Chrome to enable PDF output. Without Chrome
+   the app still produces a bilingual HTML you can print or convert
+   manually; it'll show a small "install Chrome to also produce PDF"
+   note in the assemble step.
+
+---
+
+## Power user — run from source
+
+If you want to hack on the code, or just prefer the Terminal, the GUI
+also runs straight from a Python venv:
 
 ```bash
 python run_gui.py
@@ -302,6 +335,43 @@ out/stories/            generated: translated stories
 out/<book_name>.{html,pdf}  generated: final outputs
 out/validation_report.json  generated: post-run validator findings
 ```
+
+---
+
+## Building the Mac .app (maintainer notes)
+
+To produce both DMGs that get attached to a Release:
+
+```bash
+# One-time: download python-build-standalone CPython for arm64 + x86_64
+# and create matching build venvs (~70 MB per arch, cached).
+./build/setup_build_venvs.sh
+
+# Build both arm64 and x86_64 .apps + DMGs (~3 min each).
+./build/build_both.sh
+```
+
+Outputs:
+
+- `dist/Book Translator (Apple Silicon).dmg` — for M1/M2/M3/M4 Macs.
+- `dist/Book Translator (Intel).dmg` — for pre-2020 Intel Macs.
+
+The .apps are **ad-hoc code-signed** (no Apple Developer account
+required). First launch on the target Mac requires the right-click →
+Open Gatekeeper workaround documented above.
+
+Build details:
+
+- `build/book_translator.spec` — PyInstaller spec; reads `TARGET_ARCH`
+  and `APP_NAME` from the environment so the same spec drives both
+  per-arch builds.
+- `build/build_mac.sh` — orchestrates one architecture: icon → PyInstaller
+  (under `arch -<TARGET_ARCH>`) → ad-hoc sign → DMG.
+- `build/build_both.sh` — wraps `build_mac.sh` twice.
+- `build/make_icns.sh` — converts `src/gui/resources/book.svg` into a
+  multi-resolution `.icns` using only macOS-built-in tools (`sips`,
+  `iconutil`).
+- `build/dmg_settings.py` — dmgbuild layout (drag-to-Applications).
 
 ---
 

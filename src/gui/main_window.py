@@ -346,6 +346,28 @@ class MainWindow(QMainWindow):
         d.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
 
+    def _maybe_warn_chrome_missing(self) -> None:
+        """If the user asked for book-pdf but Chrome wasn't found, surface
+        a clear note in the assemble card's hint line and the status bar
+        instead of letting the user wonder why no PDF appeared.
+        """
+        if not self.cfg:
+            return
+        wanted_pdf = "book-pdf" in self.cfg.assemble.formats
+        if not wanted_pdf:
+            return
+        pdf_path = self.cfg.output_dir / f"{self.cfg.assemble.name}.pdf"
+        chrome = Path(self.cfg.assemble.chrome_path)
+        if not pdf_path.exists() and not chrome.exists():
+            self.statusBar().showMessage(
+                "Assembled HTML only — install Google Chrome to also produce a PDF.",
+                10000)
+            card = self.cards.get("assemble")
+            if card is not None:
+                card.show_log_line(
+                    "⚠  Chrome not found — PDF skipped. Install Google Chrome "
+                    "and click Re-run to produce a PDF as well.")
+
     def _assemble_outputs(self) -> list[Path]:
         """Return the assemble stage's output files in display order.
 
@@ -491,11 +513,8 @@ class MainWindow(QMainWindow):
         card = self.cards.get(stage)
         if not card:
             return
-        # Update the progress bar without touching the global pill state.
-        if total > 0:
-            card.progress.setVisible(True)
-            card.progress.setMaximum(max(total, 1))
-            card.progress.setValue(done)
+        # Update the progress bar + ETA without touching the global pill state.
+        card.update_progress(done, total)
         if line:
             card.show_log_line(line)
 
@@ -519,6 +538,8 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage(
                         f"Saved {len(dlg.result_stories)} reviewed section(s).",
                         4000)
+        elif ok and stage == "assemble":
+            self._maybe_warn_chrome_missing()
         elif not ok:
             QMessageBox.critical(self, f"{stage} failed",
                                  error or "Unknown error")

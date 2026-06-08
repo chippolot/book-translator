@@ -1,9 +1,15 @@
-"""Render a range of PDF pages to PNG images using pdftoppm (poppler)."""
+"""Render a range of PDF pages to PNG images via pypdfium2.
+
+We use pypdfium2 (a wrapper around Google's PDFium) instead of the
+Poppler CLI (`pdftoppm`) so the .app bundle has no external binary
+dependencies. pypdfium2 ships universal2 wheels for macOS.
+"""
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
+
+import pypdfium2 as pdfium
 
 from config import Config, load_config
 
@@ -11,25 +17,25 @@ from config import Config, load_config
 def render(pdf: Path, first: int, last: int, dpi: int,
            pages_dir: Path) -> list[Path]:
     pages_dir.mkdir(parents=True, exist_ok=True)
-    # pdftoppm writes <prefix>-<pagenum>.png. We render one page at a time so
-    # we control the output name and can skip already-rendered pages cheaply.
+    doc = pdfium.PdfDocument(pdf)
+    n_pages = len(doc)
+    # PDFium renders at 72 dpi by default; `scale` is the multiplier.
+    scale = dpi / 72.0
+
     written: list[Path] = []
-    for page in range(first, last + 1):
-        out = pages_dir / f"page_{page:04d}.png"
+    for page_num in range(first, last + 1):
+        out = pages_dir / f"page_{page_num:04d}.png"
         if out.exists():
             written.append(out)
             continue
-        prefix = pages_dir / f"_tmp_{page:04d}"
-        subprocess.run(
-            ["pdftoppm", "-png", "-r", str(dpi), "-gray",
-             "-f", str(page), "-l", str(page), str(pdf), str(prefix)],
-            check=True,
-        )
-        produced = sorted(pages_dir.glob(f"_tmp_{page:04d}*.png"))
-        if not produced:
-            print(f"WARNING: no image produced for page {page}", file=sys.stderr)
+        idx = page_num - 1  # PDF page numbers are 1-based; pypdfium2 is 0-based.
+        if idx < 0 or idx >= n_pages:
+            print(f"WARNING: page {page_num} is out of range (1..{n_pages})",
+                  file=sys.stderr)
             continue
-        produced[0].rename(out)
+        page = doc[idx]
+        bitmap = page.render(scale=scale, grayscale=True)
+        bitmap.to_pil().save(out, "PNG")
         written.append(out)
         print(f"rendered {out.name}")
     return written

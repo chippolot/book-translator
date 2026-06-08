@@ -12,7 +12,25 @@ from PySide6.QtWidgets import QApplication
 from .main_window import MainWindow
 
 APP_NAME = "Book Translator"
-ICON_PATH = Path(__file__).resolve().parent / "resources" / "book.svg"
+
+
+def _resource(*parts: str) -> Path:
+    """Locate a bundled resource in both dev and PyInstaller-frozen contexts.
+
+    PyInstaller sets `sys._MEIPASS` to the temp directory it extracts data
+    files into; in dev we fall back to the package directory. Data files
+    are added to the spec under their `gui/...` package path so the layout
+    matches in both cases (see `build/book_translator.spec`).
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = Path(sys._MEIPASS) / "gui"
+    else:
+        base = Path(__file__).resolve().parent
+    return base.joinpath(*parts)
+
+
+ICON_PATH = _resource("resources", "book.svg")
+STYLE_PATH = _resource("style.qss")
 
 
 def _fix_macos_menubar_name(name: str) -> None:
@@ -62,9 +80,8 @@ def main() -> int:
     f.setPointSize(13)
     app.setFont(f)
 
-    style_path = Path(__file__).resolve().parent / "style.qss"
-    if style_path.exists():
-        app.setStyleSheet(style_path.read_text(encoding="utf-8"))
+    if STYLE_PATH.exists():
+        app.setStyleSheet(STYLE_PATH.read_text(encoding="utf-8"))
 
     win = MainWindow()
     win.show()
