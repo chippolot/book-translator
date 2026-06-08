@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="cover" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6e7eff"/>
+      <stop offset="1" stop-color="#4453e6"/>
+    </linearGradient>
+  </defs>
+  <!-- Cover (forms an outer border around the two pages). -->
+  <rect x="24" y="48" width="208" height="160" rx="14" fill="url(#cover)"/>
+  <!-- Left page (source). -->
+  <rect x="34" y="58" width="92" height="140" rx="3" fill="#ffffff"/>
+  <!-- Right page (target). -->
+  <rect x="130" y="58" width="92" height="140" rx="3" fill="#ffffff"/>
+  <!-- Spine. -->
+  <rect x="124" y="48" width="8" height="160" fill="#3c47c4"/>
+  <!-- Left page: source-language text lines (neutral gray). -->
+  <rect x="46" y="82" width="64" height="6" rx="2" fill="#aab0c5"/>
+  <rect x="46" y="102" width="70" height="6" rx="2" fill="#aab0c5"/>
+  <rect x="46" y="122" width="54" height="6" rx="2" fill="#aab0c5"/>
+  <rect x="46" y="142" width="60" height="6" rx="2" fill="#aab0c5"/>
+  <!-- Right page: translated text lines (primary blue). -->
+  <rect x="142" y="82" width="68" height="6" rx="2" fill="#6e7eff"/>
+  <rect x="142" y="102" width="58" height="6" rx="2" fill="#6e7eff"/>
+  <rect x="142" y="122" width="64" height="6" rx="2" fill="#6e7eff"/>
+  <rect x="142" y="142" width="52" height="6" rx="2" fill="#6e7eff"/>
+</svg>

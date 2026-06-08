@@ -19,9 +19,11 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
+import json as _json
+
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView,
-    QLabel, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
+    QLabel, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -238,8 +240,61 @@ class SegmentReviewDialog(QDialog):
         merged = segment_mod.merge_into_previous(edited, rejects)
         self.result_stories = merged
 
-        # 3. Write stories.json and record review state.
+        # 3. Invalidate any existing translations whose source/title no
+        #    longer matches the new sections. Without this, translate would
+        #    skip them (file already exists) and the assembled book would
+        #    use stale translations of the pre-edit sections.
+        stale_files = _stale_translations(self.cfg, merged)
+        if stale_files:
+            ans = QMessageBox.question(
+                self, "Re-translate edited sections?",
+                f"{len(stale_files)} existing translation(s) no longer match "
+                f"the edited sections. Delete them so they will be re-translated "
+                f"on the next run? Cancel to keep the old translations as-is.",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes)
+            if ans == QMessageBox.Cancel:
+                return
+            if ans == QMessageBox.Yes:
+                for f in stale_files:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+
+        # 4. Write stories.json and record review state.
         segment_mod.write_stories(self.cfg, merged)
         ws.mark_reviewed(self.cfg)
         ws.clear_stale(self.cfg, "segment")
         self.accept()
+
+
+def _stale_translations(cfg, new_stories: list[dict]) -> list:
+    """Return existing per-section JSON files whose source or title no
+    longer matches the new section at that index. Files for indices that
+    don't exist in `new_stories` (e.g. after merges reduced the count) are
+    also returned as stale."""
+    stories_dir = cfg.stories_dir
+    if not stories_dir.exists():
+        return []
+    new_by_index = {s.get("index"): s for s in new_stories}
+    stale = []
+    for f in stories_dir.glob("*.json"):
+        try:
+            idx = int(f.name[:3])
+        except ValueError:
+            continue
+        new = new_by_index.get(idx)
+        if new is None:
+            # Index no longer exists (section was merged away).
+            stale.append(f)
+            continue
+        try:
+            existing = _json.loads(f.read_text())
+        except Exception:  # noqa: BLE001
+            stale.append(f)
+            continue
+        if existing.get("source") != new.get("source") \
+                or existing.get("title") != new.get("title"):
+            stale.append(f)
+    return stale

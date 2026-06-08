@@ -78,8 +78,19 @@ def _process(story: dict, cfg: Config, provider: str, model: str,
              force: bool, out_dir: Path, usage_cb: UsageCb = None) -> str:
     out = out_dir / f"{_slug(story['title'], story['index'])}.json"
     label = story["title"] or "[untitled]"
+    # If a previous run produced a file at THIS slug, reuse it.
     if out.exists() and not force:
         return f"section {story['index']}: skip (already done)"
+    # Otherwise scrub any stale file at a different slug for the same index
+    # (e.g. the user edited the title in the review step). Without this,
+    # assemble.load_stories would pick up BOTH the old and new file and
+    # duplicate the section in the final book.
+    for stale in out_dir.glob(f"{story['index']:03d}_*.json"):
+        if stale.name != out.name:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
     translated_title = _with_retry(
         lambda: translate_title(story["title"] or "", cfg,
                                 provider=provider, model=model,

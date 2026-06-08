@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("book-translate")
+        self.setWindowTitle("Book Translator")
         self.resize(1020, 760)
         self.setMinimumSize(820, 580)
 
@@ -109,7 +109,7 @@ class MainWindow(QMainWindow):
         v.setContentsMargins(40, 40, 40, 40); v.setSpacing(24)
         v.addStretch(1)
 
-        title = QLabel("book-translate")
+        title = QLabel("Book Translator")
         title.setObjectName("WelcomeTitle")
         f = title.font(); f.setPointSize(28); f.setWeight(QFont.DemiBold)
         title.setFont(f); title.setAlignment(Qt.AlignCenter)
