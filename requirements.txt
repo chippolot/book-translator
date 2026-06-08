@@ -1,0 +1,8 @@
+anthropic>=0.40
+google-genai>=0.3
+openai>=1.40
+python-dotenv>=1.0
+pyyaml>=6.0
+PySide6>=6.6
+keyring>=24
+ruamel.yaml>=0.18

@@ -1,0 +1,12 @@
+.venv/
+.env
+pages/
+out/
+__pycache__/
+*.pyc
+# Per-book active config (contains personal paths). Users start from
+# book.example.yaml — see README.
+book.yaml
+books/
+# Per-machine Claude Code session settings
+.claude/settings.local.json

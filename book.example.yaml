@@ -1,0 +1,106 @@
+# book.yaml — per-book configuration for the translation pipeline.
+#
+# Copy this file to `book.yaml`, edit the values to match your book, then run:
+#   python -m src.run --config book.yaml
+#
+# Tip: `python -m src.init_book --pdf path/to/book.pdf` can generate this
+# file automatically by sampling a few pages of the PDF.
+
+book:
+  title: "Phantasieen eines Realisten"
+  author: "Josef Popper-Lynkeus"
+  # Optional. Free text shown under the title on the title page.
+  byline: "writing as Lynkeus · 1900"
+  # Optional. Shown as the subtitle (often an English rendering of the title).
+  subtitle_translated: "Fantasies of a Realist"
+  # Optional. HTML rendered on the "About this book" info page. Leave blank
+  # to skip the info page.
+  about_html: |
+    <p>A short description of the book and its history, in HTML.</p>
+    <p>This block becomes the "About this book" page of the final PDF.</p>
+  # Optional. Path (relative to this file) to a cover image PNG/JPG.
+  cover: "out/cover.png"
+  # Optional. Free text on the title page meta line.
+  credit: "Draft English translation, prepared 2026"
+
+input:
+  # Path to the source PDF. ~ is expanded.
+  pdf: "~/Downloads/phantasieeneine00poppgoog.pdf"
+  # PDF page numbers (1-based, INCLUSIVE) to actually translate. Typically
+  # this skips front-matter, table of contents, and back-matter.
+  first_page: 13
+  last_page: 542
+  # Render resolution for the page images. 200 is a good default; raise to
+  # 300 if the OCR is missing detail in dense pages.
+  dpi: 200
+
+languages:
+  # Source = the language in the book. Target = the language to translate into.
+  # Anything the LLM understands works: German, French, Russian, Latin, etc.
+  source: "German"
+  target: "English"
+
+# Free-form notes spliced into the prompts. All three can be empty strings for
+# modern, clean prints — but they help a lot for old/specialised material.
+prompts:
+  # 1–3 sentences of context about the book. Era, genre, register, anything
+  # the model should know before reading a page.
+  book_context: |
+    A 1900 Austrian collection of short philosophical and poetic vignettes by
+    Josef Popper-Lynkeus, published under the pen name "Lynkeus".
+  # Notes specific to TRANSCRIPTION: script type, orthography quirks,
+  # historical typography hazards.
+  transcription_notes: |
+    Printed in Fraktur (blackletter). Expand the long-s (ſ) to normal 's'.
+    Keep original 1900 orthography (Theil, Athem, daß, Thätigkeit).
+  # Notes about SEGMENTATION: what counts as a section title in this book,
+  # and what visually-heading-like elements are NOT titles. Critical for
+  # plays/dialogues where speaker labels look like titles but aren't.
+  segmentation_notes: |
+    Section titles are the story/vignette names at the top of each piece.
+    There are no speaker labels or other inline headings to worry about.
+  # Notes specific to TRANSLATION: stylistic register, tone, special handling.
+  translation_style: |
+    Aim for natural, readable, literary modern English that preserves the
+    tone and imagery of the original. Translate verse as verse, keeping
+    line breaks; render prose as flowing paragraphs.
+
+providers:
+  # Which model handles each stage. transcribe is vision (reads PDF pages);
+  # translate is text-only. The defaults below are sensible.
+  transcribe:
+    provider: "google"           # google | anthropic | openai
+    # model: "gemini-2.5-flash"  # optional; per-provider default used if omitted
+  translate:
+    provider: "anthropic"
+    # model: "claude-sonnet-4-6"
+
+output:
+  # All artifacts live here (relative to this file unless absolute).
+  dir: "out"
+  pages_dir: "pages"
+
+assemble:
+  # Filename stem for the final HTML/PDF outputs.
+  name: "Phantasieen_eines_Realisten_EN"
+  # Which outputs to produce.
+  formats:
+    - side-by-side-html   # bilingual review HTML (source | target)
+    - book-html           # styled English-only book HTML
+    - book-pdf            # render the book HTML to PDF via headless Chrome
+  # macOS path to Chrome/Chromium for PDF rendering. Override if Chrome is
+  # installed somewhere else, or use a Chromium binary.
+  chrome_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+validate:
+  # Characters that should NOT routinely appear in the TARGET translation —
+  # if many do, the translator probably left source text untranslated.
+  # Set to [] if your target language uses the same alphabet as the source.
+  source_charset_signals: ["ß", "ä", "ö", "ü"]
+  # Acceptable length ratio of translation / source. Stories whose translated
+  # length falls outside this band get flagged for retry.
+  length_ratio_min: 0.4
+  length_ratio_max: 2.5
+  # Pages whose transcribed character count is below this fraction of the
+  # book-wide median get flagged (likely a failed OCR).
+  transcript_short_fraction: 0.25
